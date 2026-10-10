@@ -1,0 +1,4 @@
+tax-collection-on-gst-portal - https://ckandev.indiadataportal.com/dataset/goods-and-services-tax
+
+
+RS_Session_266_AU_1677_B_2 - https://www.data.gov.in/resource/state-wise-details-capita-gross-state-domestic-product-gsdp-current-prices-2019-20-2023-24
