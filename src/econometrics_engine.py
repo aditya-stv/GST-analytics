@@ -33,7 +33,14 @@ def compute_gini_and_lorenz(values: np.ndarray) -> Tuple[float, np.ndarray, np.n
     lorenz_curve = np.insert(cum_vals / total_val, 0, 0)
     pop_percentiles = np.linspace(0, 1, n + 1)
     
-    area_under_lorenz = np.trapz(lorenz_curve, pop_percentiles)
+    # Compatible across NumPy 1.x and NumPy 2.0+
+    if hasattr(np, "trapezoid"):
+        area_under_lorenz = np.trapezoid(lorenz_curve, pop_percentiles)
+    elif hasattr(np, "trapz"):
+        area_under_lorenz = np.trapz(lorenz_curve, pop_percentiles)
+    else:
+        from scipy.integrate import trapezoid
+        area_under_lorenz = trapezoid(lorenz_curve, pop_percentiles)
     gini = 1.0 - 2.0 * area_under_lorenz
     return float(np.clip(gini, 0.0, 1.0)), pop_percentiles, lorenz_curve
 
