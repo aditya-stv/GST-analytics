@@ -307,8 +307,8 @@ with tabs[1]:
         fig.update_yaxes(tickfont={"size": 9})
         show(fig)
     insight("<b>Why this matters:</b> the uncorrected file overstates total GST by ~₹2.67 lakh Cr and the cess "
-            "share by ~2.3 points. Its FY 2025-26 data was 'annualised' from 2 corrupt months, which on its own "
-            "pushed the original elasticity estimate above 2.")
+            "share by ~2.3 points. Annualising FY 2025-26 from its 2 corrupt months would roughly double that "
+            "year and badly distort any growth or elasticity estimate, so it is excluded.")
 
 # ================================================================ 2. REVENUE TRENDS
 with tabs[2]:
@@ -595,8 +595,7 @@ with tabs[5]:
         f"the two-way FE estimate falls to <b>β = {mm.loc['Two-way fixed effects', 'elasticity']:.2f}</b> "
         f"(95% CI {mm.loc['Two-way fixed effects', 'ci_low']:.2f} to {mm.loc['Two-way fixed effects', 'ci_high']:.2f}, "
         f"p = {mm.loc['Two-way fixed effects', 'p_value']:.2f}). With five years of income data, a state growing faster "
-        "than its peers is <b>not</b> shown to collect disproportionately more GST. The original project's β = 2.03 "
-        "came from synthetic back-casts and a corrupt FY 2025-26 data point.")
+        "than its peers is <b>not</b> shown to collect disproportionately more GST.")
 
     st.markdown("#### State tax buoyancy")
     bu = B["buoyancy"]
@@ -876,27 +875,6 @@ with tabs[9]:
 8. **Fix the source data.** Correct the Aug 2025 and Jan 2026 cess column, publish the 8 missing months of 2025-26,
    and release state population and total GSDP so revenue can be analysed per person.
 """)
-    st.subheader("Corrections to the earlier version of this project")
-    st.dataframe(pd.DataFrame([
-        ["Total GST ₹93.82 lakh Cr", f"{lakh_cr(F['total_cr'])} (Aug 2017 to Mar 2025)", "Corrupt cess rows and incomplete FY 2025-26 were included"],
-        ["Cess share 11.4%", f"{share['cess']:.1f}%", "Cess column held CGST+SGST+IGST in Aug 2025 and Jan 2026"],
-        ["'95 months, July 2017 to January 2026'", "95 rows span 103 calendar months; 8 are missing", "Gaps in Apr to Jul and Sep to Dec 2025"],
-        ["Cess: Odisha 24.2%, Jharkhand 21.5%, Chhattisgarh 18.9%",
-         ", ".join(f"{s} {v:.1f}%" for s, v in F['top_cess'].head(3).items()) + f", Odisha {F['state_mix'].loc['Odisha', 'cess']:.1f}%",
-         "Values were mis-stated and polluted by corrupt rows"],
-        ["IGST: Haryana 43.1%, Gujarat 41.4%, Tamil Nadu 39.8%",
-         f"Haryana {F['state_mix'].loc['Haryana', 'igst']:.1f}%, Gujarat {F['state_mix'].loc['Gujarat', 'igst']:.1f}%, "
-         f"Tamil Nadu {F['state_mix'].loc['Tamil Nadu', 'igst']:.1f}%", "Gujarat and Tamil Nadu are below the national IGST share"],
-        ["FE elasticity β = 2.03, R² = 98.9%", f"Two-way FE β = {mm.loc['Two-way fixed effects', 'elasticity']:.2f} (p = {mm.loc['Two-way fixed effects', 'p_value']:.2f})",
-         "Estimated on synthetic back-casts and a corrupt FY26 point; R² included dummies"],
-        ["Gini of per-capita GSDP = 0.36", f"{F['gini_gsdp_pc']:.2f} (FY 2022-23)", "Mis-stated; the old code itself produced 0.28"],
-        ["'Wealth ratio fixed at 10.5x to 10.6x every year'", f"{F['income_ratio']['ratio'].min():.2f}x to {F['income_ratio']['ratio'].max():.2f}x",
-         "FY 2019-20 is 10.06x (Goa vs Bihar)"],
-        ["Recovery 'catalysed by e-invoicing'", "Timing coincides; causality not identified", "Unsupported causal claim"],
-        ["'Bayesian credible intervals', 'Holt's trend', 'inverted elasticity backcast'", "Removed",
-         "Code used fixed ±% bands and simple growth multipliers, not the methods described"],
-    ], columns=["Original claim", "Verified value", "Reason"]), hide_index=True, width="stretch")
-
     st.subheader("Method in brief")
     st.markdown("""
 - **Cleaning:** automated rules for launch-month placeholders, column corruption, calendar gaps and non-territorial
