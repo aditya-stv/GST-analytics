@@ -1,47 +1,52 @@
 """
-simulation_engine.py - Stochastic Monte Carlo Fiscal Simulation Engine
+simulation_engine.py - Monte Carlo scenario model for next-year national GST revenue.
+
+Revenue is split into a non-cess base, which grows with nominal GDP times a
+buoyancy draw plus a compliance effect, and the compensation cess, which grows
+with nominal GDP and is scaled by the share of cess retained under the policy
+scenario.
 """
 
-from typing import Dict, Any
+from typing import Dict
+
 import numpy as np
 
+
 def run_monte_carlo_fiscal_simulation(
-    base_annual_collection: float,
-    expected_gdp_growth_pct: float = 6.5,
-    expected_inflation_pct: float = 4.5,
-    compliance_efficiency_delta_pct: float = 1.5,
-    cess_policy_factor: float = 1.0,
-    n_simulations: int = 1000,
-    random_seed: int = 42
-) -> Dict[str, Any]:
-    """Simulates 1,000 forward paths to evaluate Value-at-Risk (VaR 95%)."""
-    np.random.seed(random_seed)
-    
-    mu_nominal_growth = (expected_gdp_growth_pct + expected_inflation_pct) / 100.0
-    sigma_nominal_growth = 0.022
-    simulated_nominal_growth = np.random.normal(mu_nominal_growth, sigma_nominal_growth, n_simulations)
-    
-    simulated_elasticity = np.random.normal(1.08, 0.12, n_simulations)
-    simulated_elasticity = np.clip(simulated_elasticity, 0.70, 1.45)
-    compliance_shock = np.random.normal(compliance_efficiency_delta_pct / 100.0, 0.008, n_simulations)
-    
-    gross_growth_factor = 1.0 + (simulated_elasticity * simulated_nominal_growth) + compliance_shock
-    cess_adjustment = 1.0 - (1.0 - cess_policy_factor) * 0.075
-    simulated_revenues = base_annual_collection * gross_growth_factor * cess_adjustment
-    
-    mean_rev = np.mean(simulated_revenues)
-    median_rev = np.median(simulated_revenues)
-    p05 = np.percentile(simulated_revenues, 5)
-    p95 = np.percentile(simulated_revenues, 95)
-    var_95_drawdown = max(0.0, base_annual_collection - p05)
-    
+    base_revenue_cr: float,
+    cess_share: float,
+    real_gdp_growth_pct: float = 6.5,
+    inflation_pct: float = 4.0,
+    growth_sd_pct: float = 1.5,
+    buoyancy_mean: float = 1.0,
+    buoyancy_sd: float = 0.15,
+    compliance_gain_pct: float = 0.0,
+    cess_retained: float = 1.0,
+    n_simulations: int = 10_000,
+    seed: int = 42,
+) -> Dict:
+    rng = np.random.default_rng(seed)
+    nominal_mu = (1 + real_gdp_growth_pct / 100) * (1 + inflation_pct / 100) - 1
+    nominal = rng.normal(nominal_mu, growth_sd_pct / 100, n_simulations)
+    buoyancy = np.clip(rng.normal(buoyancy_mean, buoyancy_sd, n_simulations), 0.3, 2.5)
+    compliance = rng.normal(compliance_gain_pct / 100, 0.005, n_simulations)
+
+    non_cess = base_revenue_cr * (1 - cess_share) * (1 + buoyancy * nominal + compliance)
+    cess = base_revenue_cr * cess_share * (1 + nominal) * cess_retained
+    revenue = non_cess + cess
+
+    median = float(np.median(revenue))
+    p05, p95 = np.percentile(revenue, [5, 95])
     return {
         "n_simulations": n_simulations,
-        "base_annual_collection_cr": round(float(base_annual_collection), 1),
-        "mean_projected_cr": round(float(mean_rev), 1),
-        "median_projected_cr": round(float(median_rev), 1),
-        "p05_downside_cr": round(float(p05), 1),
-        "p95_upside_cr": round(float(p95), 1),
-        "var_95_drawdown_cr": round(float(var_95_drawdown), 1),
-        "simulated_values": simulated_revenues
+        "base_revenue_cr": float(base_revenue_cr),
+        "nominal_growth_mean_pct": nominal_mu * 100,
+        "mean_cr": float(revenue.mean()),
+        "median_cr": median,
+        "p05_cr": float(p05),
+        "p95_cr": float(p95),
+        "revenue_at_risk_95_cr": median - float(p05),
+        "expected_growth_pct": (revenue.mean() / base_revenue_cr - 1) * 100,
+        "prob_below_base": float((revenue < base_revenue_cr).mean()),
+        "simulated_values": revenue,
     }

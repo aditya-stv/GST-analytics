@@ -1,130 +1,155 @@
 """
-econometrics_engine.py - Panel Fixed Effects, Tax Buoyancy, and Inequality Engine
+econometrics_engine.py - Panel elasticity models, correlations, buoyancy and inequality.
+
+All estimation runs on the empirical panel only (states x FY 2019-20..2023-24,
+both series observed). Standard errors are clustered by state because the
+same state appears in up to five years.
 """
 
-import os
-import sys
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Tuple
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from statsmodels.regression.linear_model import OLS
+from scipy import stats
 
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
 
-def compute_gini_and_lorenz(values: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray]:
-    """Computes Gini Coefficient and Lorenz curve cumulative points."""
-    vals = np.array(values, dtype=float)
-    vals = vals[~np.isnan(vals)]
-    vals = vals[vals >= 0]
-    if len(vals) == 0:
-        return 0.0, np.array([0, 1]), np.array([0, 1])
-        
-    sorted_vals = np.sort(vals)
-    n = len(sorted_vals)
-    cum_vals = np.cumsum(sorted_vals)
-    total_val = cum_vals[-1]
-    
-    if total_val == 0:
-        return 0.0, np.linspace(0, 1, n + 1), np.linspace(0, 1, n + 1)
-        
-    lorenz_curve = np.insert(cum_vals / total_val, 0, 0)
-    pop_percentiles = np.linspace(0, 1, n + 1)
-    
-    # Compatible across NumPy 1.x and NumPy 2.0+
-    if hasattr(np, "trapezoid"):
-        area_under_lorenz = np.trapezoid(lorenz_curve, pop_percentiles)
-    elif hasattr(np, "trapz"):
-        area_under_lorenz = np.trapz(lorenz_curve, pop_percentiles)
-    else:
-        from scipy.integrate import trapezoid
-        area_under_lorenz = trapezoid(lorenz_curve, pop_percentiles)
-    gini = 1.0 - 2.0 * area_under_lorenz
-    return float(np.clip(gini, 0.0, 1.0)), pop_percentiles, lorenz_curve
+def compute_gini_and_lorenz(values) -> Tuple[float, np.ndarray, np.ndarray]:
+    """Gini coefficient and Lorenz-curve points for a vector of non-negative values."""
+    vals = np.asarray(values, dtype=float)
+    vals = np.sort(vals[~np.isnan(vals) & (vals >= 0)])
+    n = len(vals)
+    if n == 0 or vals.sum() == 0:
+        return 0.0, np.array([0.0, 1.0]), np.array([0.0, 1.0])
+    lorenz = np.insert(np.cumsum(vals) / vals.sum(), 0, 0.0)
+    population = np.linspace(0.0, 1.0, n + 1)
+    # Trapezoid area under the Lorenz curve (works on every NumPy version).
+    area = float(np.sum((lorenz[1:] + lorenz[:-1]) / 2.0 * np.diff(population)))
+    return float(1.0 - 2.0 * area), population, lorenz
 
-def run_panel_econometrics(macro_panel: pd.DataFrame) -> Dict[str, Any]:
-    """Estimates Panel Fixed Effects vs Pooled OLS for Tax Buoyancy."""
-    df = macro_panel.copy()
-    df = df.dropna(subset=["annualized_total_gst", "per_capita_gsdp"])
-    df = df[(df["annualized_total_gst"] > 0) & (df["per_capita_gsdp"] > 0)]
-    
-    df["log_gst"] = np.log(df["annualized_total_gst"])
-    df["log_gsdp"] = np.log(df["per_capita_gsdp"])
-    
-    post_covid_fys = ["2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]
-    df["post_covid"] = df["fiscal_year"].isin(post_covid_fys).astype(float)
-    
-    # 1. Pooled OLS
-    X_pooled = sm.add_constant(df[["log_gsdp", "post_covid"]])
-    y = df["log_gst"]
-    pooled_model = OLS(y, X_pooled).fit()
-    
-    # 2. Entity Fixed Effects (Within transformation)
-    state_dummies = pd.get_dummies(df["state"], drop_first=True, dtype=float)
-    X_fe = sm.add_constant(pd.concat([df[["log_gsdp", "post_covid"]], state_dummies], axis=1))
-    fe_model = OLS(y, X_fe).fit()
-    
+
+def _residualize(frame: pd.DataFrame, cols, absorb) -> pd.DataFrame:
+    """Frisch-Waugh-Lovell: residualise `cols` on dummies for the `absorb` factors."""
+    if not absorb:
+        return frame[cols] - frame[cols].mean()
+    dummies = pd.get_dummies(frame[absorb].astype(str), drop_first=False, dtype=float)
+    beta, *_ = np.linalg.lstsq(dummies.values, frame[cols].values, rcond=None)
+    return pd.DataFrame(frame[cols].values - dummies.values @ beta, columns=cols, index=frame.index)
+
+
+def _fit(y: pd.Series, x: pd.Series, groups: pd.Series):
+    return sm.OLS(y, sm.add_constant(x.to_frame())).fit(
+        cov_type="cluster", cov_kwds={"groups": pd.factorize(groups)[0]})
+
+
+def run_panel_models(panel: pd.DataFrame) -> pd.DataFrame:
+    """
+    Estimates the GST-income elasticity  ln(GST_it) = a + b ln(GSDPpc_it) + e  four ways.
+
+    * Pooled OLS          - cross-state comparison, confounded by state size.
+    * State FE            - within-state variation; still shares the common nominal trend.
+    * Two-way FE          - state + year effects; removes inflation/COVID shocks common to all states.
+    * First differences   - year-on-year growth regression.
+    R-squared for the FE models is the within (partial) R-squared after absorbing the effects,
+    not the inflated LSDV R-squared that includes the dummies.
+    """
+    df = panel.copy()
+    rows = []
+
+    specs = [
+        ("Pooled OLS", [], "Between-state; confounded by population size"),
+        ("State fixed effects", ["state"], "Within-state; shares common nominal trend"),
+        ("Two-way fixed effects", ["state", "fiscal_year"], "Within-state, net of year shocks"),
+    ]
+    for name, absorb, note in specs:
+        X = df[["log_gsdp_pc"]]
+        if absorb:
+            X = pd.concat([X, pd.get_dummies(df[absorb].astype(str), drop_first=True, dtype=float)], axis=1)
+        res = sm.OLS(df["log_gst"], sm.add_constant(X)).fit(
+            cov_type="cluster", cov_kwds={"groups": pd.factorize(df["state"])[0]})
+        row = _summarise(name, res, "log_gsdp_pc", len(df), note)
+        if absorb:
+            r = _residualize(df, ["log_gst", "log_gsdp_pc"], absorb)
+            row["r_squared"] = float(np.corrcoef(r["log_gst"], r["log_gsdp_pc"])[0, 1] ** 2)
+        rows.append(row)
+
+    df = df.sort_values(["state", "fiscal_year"])
+    df["d_log_gst"] = df.groupby("state")["log_gst"].diff()
+    df["d_log_gsdp"] = df.groupby("state")["log_gsdp_pc"].diff()
+    fd = df.dropna(subset=["d_log_gst", "d_log_gsdp"])
+    res = _fit(fd["d_log_gst"], fd["d_log_gsdp"], fd["state"])
+    rows.append(_summarise("First differences", res, "d_log_gsdp", len(fd), "Year-on-year growth response"))
+    return pd.DataFrame(rows)
+
+
+def _summarise(name, res, var, n, note) -> Dict:
+    lo, hi = res.conf_int().loc[var]
     return {
-        "pooled_ols": {
-            "r_squared": float(pooled_model.rsquared),
-            "beta_gsdp": float(pooled_model.params.get("log_gsdp", 0.0)),
-            "se_gsdp": float(pooled_model.bse.get("log_gsdp", 0.0)),
-            "pval_gsdp": float(pooled_model.pvalues.get("log_gsdp", 0.0)),
-            "beta_covid": float(pooled_model.params.get("post_covid", 0.0))
-        },
-        "fixed_effects": {
-            "r_squared": float(fe_model.rsquared),
-            "beta_gsdp": float(fe_model.params.get("log_gsdp", 0.0)),
-            "se_gsdp": float(fe_model.bse.get("log_gsdp", 0.0)),
-            "pval_gsdp": float(fe_model.pvalues.get("log_gsdp", 0.0)),
-            "beta_covid": float(fe_model.params.get("post_covid", 0.0))
-        },
-        "n_observations": int(len(df)),
-        "n_states": int(df["state"].nunique())
+        "model": name,
+        "elasticity": float(res.params[var]),
+        "std_error": float(res.bse[var]),
+        "ci_low": float(lo),
+        "ci_high": float(hi),
+        "p_value": float(res.pvalues[var]),
+        "r_squared": float(res.rsquared),
+        "n_obs": int(n),
+        "interpretation": note,
     }
 
-def calculate_state_buoyancy_profile(macro_panel: pd.DataFrame) -> pd.DataFrame:
-    """Computes state-level empirical Tax Buoyancy Index."""
-    df = macro_panel.copy()
-    piv_gst = df.pivot(index="state", columns="fiscal_year", values="annualized_total_gst")
-    piv_gsdp = df.pivot(index="state", columns="fiscal_year", values="per_capita_gsdp")
-    
+
+def correlation_table(panel: pd.DataFrame) -> pd.DataFrame:
+    """
+    Correlates per-capita GSDP with GST level and composition two ways:
+    pooled state-years (as originally reported, observations not independent)
+    and one observation per state (period averages, n = 28), which is the valid test.
+    """
+    df = panel.copy()
+    state = df.groupby("state").agg(
+        per_capita_gsdp=("per_capita_gsdp", "mean"), total_gst=("total_gst", "mean"),
+        igst=("igst", "sum"), cess=("cess", "sum"), gst_sum=("total_gst", "sum"),
+    )
+    state["igst_share"] = state["igst"] / state["gst_sum"]
+    state["cess_share"] = state["cess"] / state["gst_sum"]
+
+    rows = []
+    for label, col in [("Total GST (Rs Cr)", "total_gst"), ("IGST share", "igst_share"), ("Cess share", "cess_share")]:
+        r_p, p_p = stats.pearsonr(df["per_capita_gsdp"], df[col])
+        r_s, p_s = stats.pearsonr(state["per_capita_gsdp"], state[col])
+        rho, p_rho = stats.spearmanr(state["per_capita_gsdp"], state[col])
+        rows.append({
+            "metric": label,
+            "pooled_r": r_p, "pooled_p": p_p, "pooled_n": len(df),
+            "state_r": r_s, "state_p": p_s, "state_spearman": rho, "state_spearman_p": p_rho,
+            "state_n": len(state),
+        })
+    return pd.DataFrame(rows)
+
+
+def calculate_state_buoyancy(panel: pd.DataFrame) -> pd.DataFrame:
+    """
+    State tax buoyancy = log-growth of GST / log-growth of per-capita GSDP,
+    from FY 2019-20 to the latest year with official GSDP (FY 2023-24, else FY 2022-23).
+
+    Caveat: the denominator is per-capita income while the numerator is total revenue,
+    so population growth (~1% a year) pushes every ratio slightly upward.
+    """
     records = []
-    base_fy = "2018-19" if "2018-19" in piv_gst.columns else piv_gst.columns[0]
-    term_fy = "2023-24" if "2023-24" in piv_gst.columns else piv_gst.columns[-2]
-    
-    for state in piv_gst.index:
-        gst_start = piv_gst.loc[state, base_fy]
-        gst_end = piv_gst.loc[state, term_fy]
-        gsdp_start = piv_gsdp.loc[state, base_fy]
-        gsdp_end = piv_gsdp.loc[state, term_fy]
-        
-        pct_delta_gst = (gst_end - gst_start) / gst_start if gst_start > 0 else np.nan
-        pct_delta_gsdp = (gsdp_end - gsdp_start) / gsdp_start if gsdp_start > 0 else np.nan
-        
-        buoyancy = pct_delta_gst / pct_delta_gsdp if (pd.notna(pct_delta_gst) and pd.notna(pct_delta_gsdp) and abs(pct_delta_gsdp) > 0.001) else 1.0
-        
-        if buoyancy >= 1.30:
-            classification = "Hyper-Buoyant (Progressive)"
-        elif buoyancy >= 1.00:
-            classification = "Buoyant (Elastic)"
-        elif buoyancy >= 0.70:
-            classification = "Moderate (Unitary)"
-        else:
-            classification = "Sub-Buoyant (Lagging/Leakage)"
-            
+    for state, grp in panel.groupby("state"):
+        grp = grp.set_index("fiscal_year")
+        base = "2019-20"
+        term = "2023-24" if "2023-24" in grp.index else grp.index.max()
+        years = int(term[:4]) - int(base[:4])
+        g_gst = np.log(grp.loc[term, "total_gst"] / grp.loc[base, "total_gst"])
+        g_gsdp = np.log(grp.loc[term, "per_capita_gsdp"] / grp.loc[base, "per_capita_gsdp"])
+        buoyancy = g_gst / g_gsdp if g_gsdp > 0.01 else np.nan
         records.append({
             "state": state,
-            "base_fy": base_fy,
-            "terminal_fy": term_fy,
-            "gst_growth_pct": round(pct_delta_gst * 100.0, 1),
-            "gsdp_growth_pct": round(pct_delta_gsdp * 100.0, 1),
-            "tax_buoyancy_index": round(float(buoyancy), 2),
-            "fiscal_classification": classification,
-            "avg_annual_gst_cr": round(float(piv_gst.loc[state].mean()), 1),
-            "latest_gsdp_pc": round(float(piv_gsdp.loc[state, term_fy]), 0)
+            "period": f"{base} to {term}",
+            "gst_cagr_pct": (np.exp(g_gst / years) - 1) * 100,
+            "gsdp_pc_cagr_pct": (np.exp(g_gsdp / years) - 1) * 100,
+            "buoyancy": buoyancy,
+            "class": "Buoyant (>1)" if buoyancy >= 1 else "Sub-buoyant (<1)",
+            "latest_gst_cr": grp.loc[term, "total_gst"],
+            "latest_gsdp_pc": grp.loc[term, "per_capita_gsdp"],
         })
-        
-    return pd.DataFrame(records).sort_values("tax_buoyancy_index", ascending=False).reset_index(drop=True)
+    return pd.DataFrame(records).sort_values("buoyancy", ascending=False).reset_index(drop=True)

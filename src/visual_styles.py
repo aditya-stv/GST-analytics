@@ -1,6 +1,6 @@
 """
 visual_styles.py - Institutional Light & Dark Design System
-Provides clean CSS themes, toggleable Plotly layouts, and crisp vector styling without emojis.
+CSS themes for Streamlit, a validated categorical palette and a Plotly theme helper.
 """
 
 INSTITUTIONAL_LIGHT_CSS = """
@@ -207,32 +207,56 @@ section[data-testid="stSidebar"] {
 </style>
 """
 
-def apply_plotly_theme(fig, title: str = "", height: int = 450, is_dark: bool = False):
-    """Applies institutional layout supporting both Light and Dark modes with zero emojis."""
+# Categorical palette (validated for colour-vision deficiency, adjacent pairs, both modes).
+# Slots are assigned in fixed order and follow the entity, never its rank.
+CATEGORICAL_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+CATEGORICAL_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+COMPONENT_LABELS = {"cgst": "CGST", "sgst": "SGST", "igst": "IGST", "cess": "Cess"}
+
+
+def palette(is_dark: bool = False) -> dict:
+    cat = CATEGORICAL_DARK if is_dark else CATEGORICAL_LIGHT
+    return {
+        "categorical": cat,
+        "primary": cat[0],
+        "accent": cat[1],
+        "components": {"cgst": cat[0], "sgst": cat[1], "igst": cat[2], "cess": cat[3]},
+        "muted": "#8a8984" if is_dark else "#9a9993",
+        "text": "#f0efec" if is_dark else "#0b0b0b",
+        "text_secondary": "#c3c2b7" if is_dark else "#52514e",
+        "sequential": "Blues",
+    }
+
+
+def apply_plotly_theme(fig, title: str = None, height: int = 450, is_dark: bool = False):
+    """Applies the light/dark chart theme. Leaves an existing title alone unless one is passed."""
     if is_dark:
-        bg_paper = "rgba(0,0,0,0)"
-        bg_plot = "rgba(15, 23, 42, 0.45)"
-        text_color = "#E2E8F0"
-        subtext_color = "#94A3B8"
-        grid_color = "rgba(255, 255, 255, 0.08)"
-        legend_bg = "rgba(15, 23, 42, 0.75)"
+        bg_paper, bg_plot = "rgba(0,0,0,0)", "rgba(15, 23, 42, 0.45)"
+        text_color, subtext_color = "#E2E8F0", "#94A3B8"
+        grid_color, legend_bg = "rgba(255, 255, 255, 0.08)", "rgba(15, 23, 42, 0.75)"
     else:
-        bg_paper = "#FFFFFF"
-        bg_plot = "#F8FAFC"
-        text_color = "#0F172A"
-        subtext_color = "#64748B"
-        grid_color = "rgba(0, 0, 0, 0.06)"
-        legend_bg = "rgba(255, 255, 255, 0.85)"
-        
+        bg_paper, bg_plot = "#FFFFFF", "#FCFCFB"
+        text_color, subtext_color = "#0F172A", "#64748B"
+        grid_color, legend_bg = "rgba(0, 0, 0, 0.07)", "rgba(255, 255, 255, 0.85)"
+
     fig.update_layout(
-        title={"text": f"<b>{title}</b>", "font": {"size": 15, "color": text_color}},
         height=height,
         paper_bgcolor=bg_paper,
         plot_bgcolor=bg_plot,
+        colorway=CATEGORICAL_DARK if is_dark else CATEGORICAL_LIGHT,
         font={"family": "-apple-system, BlinkMacSystemFont, Roboto, sans-serif", "color": text_color},
-        margin={"l": 40, "r": 30, "t": 55, "b": 40},
-        xaxis={"gridcolor": grid_color, "tickfont": {"color": subtext_color}},
-        yaxis={"gridcolor": grid_color, "tickfont": {"color": subtext_color}},
-        legend={"font": {"color": text_color}, "bgcolor": legend_bg}
+        title_font={"size": 15, "color": text_color},
+        margin={"l": 50, "r": 30, "t": 60, "b": 45},
+        legend={"font": {"color": text_color}, "bgcolor": legend_bg},
+        hoverlabel={"font_size": 12},
+        bargap=0.15,
     )
+    fig.update_xaxes(gridcolor=grid_color, linecolor=grid_color, tickfont={"color": subtext_color}, zeroline=False,
+                     automargin=True)
+    fig.update_yaxes(gridcolor=grid_color, linecolor=grid_color, tickfont={"color": subtext_color}, zeroline=False,
+                     automargin=True)
+    if title is not None:
+        fig.update_layout(title={"text": f"<b>{title}</b>"})
+    elif fig.layout.title.text:
+        fig.update_layout(title={"text": f"<b>{fig.layout.title.text}</b>"})
     return fig

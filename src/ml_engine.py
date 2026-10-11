@@ -1,92 +1,121 @@
 """
-ml_engine.py - Unsupervised State Archetyping & Fiscal Anomaly Detection Engine
+ml_engine.py - Unsupervised state archetypes and fiscal anomaly detection.
 """
 
-import os
-import sys
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Tuple
+
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from sklearn.ensemble import IsolationForest
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler
 
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
+FEATURES = {
+    "log_avg_gst": ("revenue scale", "Large", "Small"),
+    "log_gsdp_pc": ("per-capita income", "High", "Low"),
+    "igst_share": ("IGST share", "High", "Low"),
+    "cess_share": ("cess share", "High", "Low"),
+    "gst_cagr": ("GST growth", "Fast", "Slow"),
+}
 
-from src.econometrics_engine import calculate_state_buoyancy_profile
 
-def perform_state_clustering(macro_panel: pd.DataFrame, n_clusters: int = 4) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Performs PCA and K-Means Clustering across the 28 benchmark states."""
-    buoyancy_df = calculate_state_buoyancy_profile(macro_panel).set_index("state")
-    
-    state_agg = macro_panel.groupby("state").agg(
-        avg_annual_gst=("annualized_total_gst", "mean"),
-        avg_gsdp_pc=("per_capita_gsdp", "mean"),
-        avg_igst_share=("igst_share", "mean"),
-        avg_cess_share=("cess_share", "mean")
-    )
-    
-    combined = state_agg.join(buoyancy_df[["tax_buoyancy_index"]])
-    feature_cols = ["avg_annual_gst", "avg_gsdp_pc", "avg_igst_share", "avg_cess_share", "tax_buoyancy_index"]
-    X = combined[feature_cols].fillna(combined[feature_cols].median())
-    
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    pca = PCA(n_components=2, random_state=42)
-    pca_coords = pca.fit_transform(X_scaled)
-    var_explained = pca.explained_variance_ratio_
-    
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
-    raw_labels = kmeans.fit_predict(X_scaled)
-    
-    combined["pca_dim1"] = pca_coords[:, 0]
-    combined["pca_dim2"] = pca_coords[:, 1]
-    combined["cluster_id"] = raw_labels
-    
-    cluster_means = combined.groupby("cluster_id")[["avg_annual_gst", "avg_gsdp_pc", "avg_cess_share"]].mean()
-    highest_gst_id = cluster_means["avg_annual_gst"].idxmax()
-    remaining = [c for c in cluster_means.index if c != highest_gst_id]
-    highest_gsdp_id = cluster_means.loc[remaining, "avg_gsdp_pc"].idxmax()
-    remaining = [c for c in remaining if c != highest_gsdp_id]
-    highest_cess_id = cluster_means.loc[remaining, "avg_cess_share"].idxmax()
-    remaining = [c for c in remaining if c != highest_cess_id]
-    catchup_id = remaining[0] if len(remaining) > 0 else 3
-    
-    archetype_map = {
-        highest_gst_id: "Industrial & Megacity Powerhouses",
-        highest_gsdp_id: "High-Income & Tourism Frontrunners",
-        highest_cess_id: "Resource & Mineral Corridor",
-        catchup_id: "Demographic & Catch-Up Consumer Economies"
+def build_state_features(annual: pd.DataFrame, gsdp: pd.DataFrame) -> pd.DataFrame:
+    """One row per state, all features scale-free (logs, shares, growth rates)."""
+    states = annual[annual["entity_type"] == "State"]
+    window = states[states["fiscal_year"].isin(["2019-20", "2020-21", "2021-22", "2022-23", "2023-24"])]
+    agg = window.groupby("state").agg(avg_gst=("total_gst", "mean"), igst=("igst", "sum"),
+                                      cess=("cess", "sum"), gst=("total_gst", "sum"))
+    feats = pd.DataFrame(index=agg.index)
+    feats["log_avg_gst"] = np.log(agg["avg_gst"])
+    feats["igst_share"] = agg["igst"] / agg["gst"]
+    feats["cess_share"] = agg["cess"] / agg["gst"]
+    feats["log_gsdp_pc"] = np.log(gsdp.groupby("state")["per_capita_gsdp"].mean())
+    piv = states.pivot(index="state", columns="fiscal_year", values="total_gst")
+    feats["gst_cagr"] = (piv["2024-25"] / piv["2018-19"]) ** (1 / 6) - 1
+    feats["avg_gst_cr"] = agg["avg_gst"]
+    feats["avg_gsdp_pc"] = np.exp(feats["log_gsdp_pc"])
+    return feats
+
+
+def _label_clusters(centroids_z: pd.DataFrame) -> Dict[int, str]:
+    """Names each cluster after its two most distinctive features (largest |z| of the centroid)."""
+    labels = {}
+    for cid, row in centroids_z.iterrows():
+        top = row.abs().sort_values(ascending=False).index[:2]
+        parts = []
+        for feat in top:
+            noun, hi, lo = FEATURES[feat]
+            parts.append(f"{hi if row[feat] > 0 else lo} {noun}")
+        label = " / ".join(parts)
+        labels[cid] = label[0].upper() + label[1:]
+    return labels
+
+
+def perform_state_clustering(features: pd.DataFrame, n_clusters: int = None) -> Tuple[pd.DataFrame, Dict]:
+    """
+    K-Means on standardised features. If n_clusters is None, k in 2..6 is chosen by
+    silhouette score. PCA is used only for the 2-D view, not for clustering.
+    """
+    cols = list(FEATURES)
+    X = StandardScaler().fit_transform(features[cols])
+
+    scores = {}
+    for k in range(2, 7):
+        lab = KMeans(n_clusters=k, random_state=42, n_init=50).fit_predict(X)
+        scores[k] = float(silhouette_score(X, lab))
+    k = n_clusters or max(scores, key=scores.get)
+
+    km = KMeans(n_clusters=k, random_state=42, n_init=50).fit(X)
+    pca = PCA(n_components=2, random_state=42).fit(X)
+    coords = pca.transform(X)
+
+    out = features.copy()
+    out["cluster_id"] = km.labels_
+    out["pca_1"], out["pca_2"] = coords[:, 0], coords[:, 1]
+    centroids_z = pd.DataFrame(km.cluster_centers_, columns=cols)
+    out["archetype"] = out["cluster_id"].map(_label_clusters(centroids_z))
+
+    meta = {
+        "k": k,
+        "silhouette_by_k": scores,
+        "silhouette": scores[k],
+        "pca_variance_ratio": [float(v) for v in pca.explained_variance_ratio_],
+        "pca_loadings": pd.DataFrame(pca.components_.T, index=cols, columns=["PC1", "PC2"]),
+        "centroids_z": centroids_z,
     }
-    
-    combined["archetype"] = combined["cluster_id"].map(archetype_map)
-    
-    metadata = {
-        "pca_variance_ratio": [float(v) for v in var_explained],
-        "total_pca_variance": float(np.sum(var_explained))
-    }
-    
-    return combined.reset_index(), metadata
+    return out.reset_index(), meta
 
-def detect_fiscal_anomalies(monthly_gst: pd.DataFrame, contamination: float = 0.03) -> pd.DataFrame:
-    """Detects anomalous monthly state reports using Isolation Forest."""
-    df = monthly_gst[monthly_gst["is_benchmark_state"]].copy()
-    
-    df["rolling_3m_mean"] = df.groupby("state_name_clean")["total_gst"].transform(
-        lambda s: s.rolling(3, min_periods=1).mean()
-    )
-    df["pct_dev_from_rolling"] = ((df["total_gst"] - df["rolling_3m_mean"]) / df["rolling_3m_mean"].replace(0, np.nan)).fillna(0.0)
-    
-    features = df[["total_gst", "pct_dev_from_rolling"]].fillna(0.0)
-    iso_forest = IsolationForest(contamination=contamination, random_state=42)
-    preds = iso_forest.fit_predict(features)
-    
-    df["is_anomaly"] = preds == -1
-    df["anomaly_score"] = iso_forest.decision_function(features)
-    
-    anomalies = df[df["is_anomaly"]].sort_values("anomaly_score", ascending=True)
-    return anomalies[["date", "state_name_clean", "total_gst", "pct_dev_from_rolling", "fiscal_year"]].reset_index(drop=True)
+
+def _robust_z(x: pd.Series) -> pd.Series:
+    med = x.median()
+    mad = (x - med).abs().median() * 1.4826
+    return (x - med) / mad if mad > 0 else x * 0
+
+
+def detect_fiscal_anomalies(monthly: pd.DataFrame, contamination: float = 0.02) -> pd.DataFrame:
+    """
+    Flags unusual state-months. Features are scale-free and seasonality-adjusted, so a large
+    state is not anomalous merely for being large:
+      * year-on-year log change (same month last year removes seasonality), robust-z within state
+      * month-on-month log change, robust-z within state
+    Returns every scored state-month with an `is_anomaly` flag.
+    """
+    df = monthly[monthly["entity_type"] == "State"][["state", "date", "fiscal_year", "total_gst"]].copy()
+    df = df.sort_values(["state", "date"])
+    df["log_gst"] = np.log(df["total_gst"].clip(lower=1.0))
+    g = df.groupby("state")["log_gst"]
+    df["yoy_change"] = g.diff(12)
+    df["mom_change"] = g.diff(1)
+    df = df.dropna(subset=["yoy_change", "mom_change"]).copy()
+    df["yoy_z"] = df.groupby("state")["yoy_change"].transform(_robust_z)
+    df["mom_z"] = df.groupby("state")["mom_change"].transform(_robust_z)
+
+    feats = df[["yoy_z", "mom_z"]].clip(-25, 25)
+    iso = IsolationForest(contamination=contamination, random_state=42, n_estimators=300).fit(feats)
+    df["anomaly_score"] = -iso.decision_function(feats)
+    df["is_anomaly"] = iso.predict(feats) == -1
+    df["yoy_change_pct"] = (np.exp(df["yoy_change"]) - 1) * 100
+    df["mom_change_pct"] = (np.exp(df["mom_change"]) - 1) * 100
+    return df.sort_values("anomaly_score", ascending=False).reset_index(drop=True)

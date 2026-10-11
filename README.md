@@ -1,163 +1,180 @@
-# Indian Macro-Fiscal & Tax Intelligence Platform (2017–2026)
-### Econometric Synthesis of Goods and Services Tax Collections & State Per Capita GSDP
+# India GST & State Income Analytics
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://gst-analytics.streamlit.app/)
-**Live Web Application:** [https://gst-analytics.streamlit.app/](https://gst-analytics.streamlit.app/)
 
-A quantitative analytics and econometric intelligence platform that harmonizes high-frequency transactional indirect tax records (**GST Portal**) with annual macroeconomic output indicators (**MoSPI Per Capita GSDP**) across all 28 Constitutional Indian States from **FY 2017-18 to FY 2025-26**.
+An end-to-end analytics project on India's Goods and Services Tax. It takes 3,570 monthly
+state-level GST records and official per-capita GSDP for 28 states, then:
+
+- **validates the raw data** with automated rules (and finds a column-corruption error in the source)
+- **measures** concentration, tax mix and the COVID-19 shock
+- **estimates** how GST responds to state income with four panel models and clustered standard errors
+- **forecasts** FY 2025-26 revenue after a rolling-origin backtest, then checks the forecast against real held-out months
+- **segments** states with K-Means and **flags anomalies** with an Isolation Forest
+- **simulates** next-year revenue under macro and policy scenarios (Monte Carlo)
+
+Every number in the app and in this README is computed by the pipeline at run time
+(`src/analysis.py`) and pinned by tests (`tests/`).
 
 ---
 
-## Live Dashboard & Repository Overview
+## Data
 
-* **Live Cloud Application:** [https://gst-analytics.streamlit.app/](https://gst-analytics.streamlit.app/)
-* **Source Repository:** [https://github.com/aditya-stv/GST-analytics](https://github.com/aditya-stv/GST-analytics)
-* **Primary Data Sources:**
-  - `tax-collection-on-gst-portal`: [India Data Portal (CKAN)](https://ckandev.indiadataportal.com/dataset/goods-and-services-tax) (95 months, July 2017 to January 2026)
-  - `RS_Session_266_AU_1677_B_2`: [Data.gov.in (MoSPI / Rajya Sabha)](https://www.data.gov.in/resource/state-wise-details-capita-gross-state-domestic-product-gsdp-current-prices-2019-20-2023-24) (Annual Per Capita GSDP, FY20 to FY24)
+| Dataset | Source | Coverage | Unit |
+|---|---|---|---|
+| `tax-collection-on-gst-portal.csv` | [India Data Portal (CKAN)](https://ckandev.indiadataportal.com/dataset/goods-and-services-tax) | 95 monthly snapshots, Jul 2017 to Jan 2026, 39 entities | ₹ crore |
+| `RS_Session_266_AU_1677_B_2.csv` | [data.gov.in (MoSPI, Rajya Sabha)](https://www.data.gov.in/resource/state-wise-details-capita-gross-state-domestic-product-gsdp-current-prices-2019-20-2023-24) | 28 states, FY 2019-20 to 2023-24 | ₹ per person, current prices |
+
+### Data-quality issues found and handled
+
+| Issue | Rows | Handling |
+|---|---|---|
+| **Cess column contains CGST+SGST+IGST** in Aug 2025 and Jan 2026, for every entity (e.g. Maharashtra Aug 2025: 7,840.27 + 9,400.00 + 9,505.44 = 26,745.71 = "cess") | 76 | Cess set to missing; detected by rule, not hard-coded |
+| July 2017 is a launch placeholder (₹53 Cr nationally vs ~₹70,000 Cr in later months) | 34 | Excluded |
+| 8 calendar months missing (Apr to Jul and Sep to Dec 2025) | n/a | FY 2025-26 excluded from annual analysis; its 2 real months are used only as a forecast check |
+| CBIC, OIDAR and "Other Territory" are centrally booked heads, not states | 182 | Kept in national totals, excluded from state rankings |
+| 6 states have no official FY 2023-24 GSDP | 6 | Left missing; no imputation enters any estimate |
+
+**Analysis window:** Aug 2017 to Mar 2025 (92 complete, validated months).
 
 ---
 
-## Project Structure
+## Key findings
+
+1. **Scale and mix.** ₹88.48 lakh crore was collected over the 92 months: IGST 35.4%, SGST 31.4%,
+   CGST 24.2%, cess 9.1%. Annual collections grew at an 11.4% CAGR from FY 2018-19 (₹8.77 lakh Cr)
+   to FY 2024-25 (₹16.76 lakh Cr).
+2. **Concentration.** Maharashtra collects 20.3% of national GST. The top 5 states (Maharashtra,
+   Karnataka, Gujarat, Tamil Nadu, Uttar Pradesh) collect 52.6%, the top 10 collect 75.4%, and the
+   bottom 10 of 36 states/UTs collect 0.63%.
+3. **COVID shock.** April 2020 collections (₹19,606 Cr) were 75.1% below the FY 2019-20 monthly
+   average (−78.1% year on year). Collections were back above that average by October 2020, 6 months later.
+4. **Income divide.** The richest state's per-capita GSDP is 10.1x to 10.6x Bihar's in every year.
+   20 of 28 states shrank in nominal per-capita terms in FY 2020-21.
+5. **Tax mix tracks the economy.** Cess is highest in the coal and mineral belt (Chhattisgarh 23.7%,
+   Jharkhand 20.8%, Madhya Pradesh 19.1%, Odisha 18.7%). Across the 28 states, richer states rely more on
+   IGST (r = +0.57, p = 0.002) and less on cess (r = −0.38, p = 0.046). Total GST is not related to
+   per-capita income (r = +0.09, p = 0.65); it follows population and economic size.
+6. **Elasticity.** Once year effects remove the common inflation trend and COVID swing, the GST-income
+   elasticity is **0.51 (95% CI −0.11 to 1.12, p = 0.11)**. With 5 years of GSDP, there is no evidence that
+   faster-growing states collect disproportionately more GST.
+
+   | Model (134 state-years, state-clustered SE) | β | 95% CI | Within R² |
+   |---|---|---|---|
+   | Pooled OLS | 0.31 | −0.76 to 1.38 | 0.01 |
+   | State fixed effects | 1.29 | 1.18 to 1.40 | 0.91 |
+   | Two-way fixed effects (state + year) | 0.51 | −0.11 to 1.12 | 0.08 |
+   | First differences | 1.51 | 1.32 to 1.70 | 0.71 |
+
+7. **Forecasting.** In a 3-year rolling-origin backtest, a seasonal-naive-with-drift model beat SARIMA
+   and Holt-Winters:
+
+   | Model | Mean MAPE | Worst year MAPE |
+   |---|---|---|
+   | Seasonal naive | 13.3% | 17.6% |
+   | **Seasonal naive + drift** | **6.6%** | 10.1% |
+   | Holt-Winters (log, damped) | 9.3% | 12.8% |
+   | SARIMA(1,1,1)(0,1,1)₁₂ + lockdown dummy | 8.2% | 12.4% |
+
+   Forecast for FY 2025-26 core GST (CGST+SGST+IGST): ₹16.92 lakh Cr (+10.3%). Against the two real
+   FY 2025-26 months, which the model never saw, the errors were −0.0% (Aug 2025) and −5.0% (Jan 2026),
+   both inside the split-conformal 80% interval (±7.7%).
+8. **Anomaly detection.** On seasonality-adjusted, within-state z-scores, the Isolation Forest flags
+   45 state-months. All of them fall in the COVID window, so the detector recovers the lockdown
+   without being told about it.
+
+### Deeper insights
+
+9. **Concentration is rising.** The top-5 states' share rose from 51.8% (FY19) to 54.1% (FY25), and
+   Maharashtra's from 19.4% to 21.5%. The Herfindahl index rose 10% (806 to 886). Biggest gainers:
+   Maharashtra +2.05 pp, Haryana +0.82 pp, Odisha +0.56 pp. Biggest losers: West Bengal −0.55 pp,
+   Jharkhand −0.53 pp, Uttarakhand −0.49 pp, Chhattisgarh −0.40 pp.
+10. **Hill and mineral states are falling behind.** Himachal Pradesh and Uttarakhand grew GST at only 5.3%
+    a year, under half the national 11.4%; Jharkhand (7.5%) and Chhattisgarh (8.4%) also lag. These are
+    producer states with small consumer markets, which a destination-based tax is expected to disadvantage.
+11. **Small states grow faster in percentage terms** (growth vs initial size r = −0.51, p = 0.006). Growth is
+    unrelated to per-capita income (r = +0.07, p = 0.74). Arunachal Pradesh and Nagaland grew about 20% a year
+    from a tiny base.
+12. **The post-COVID boom is over.** Annual growth slowed from +26.8% (FY22) to +20.7%, +15.0% and +10.0% (FY25).
+    FY25 is still 22% above the pre-COVID 7.7% growth path: a one-off level gain from formalisation and
+    2022 inflation, not a permanently higher growth rate.
+13. **Cess is shrinking in the mix.** Its share fell every year, from 10.0% to 8.5%, while IGST edged up
+    from 33.8% (FY20) to 36.0%.
+14. **SGST exceeds CGST in all 28 states** (1.30x nationally; 1.19x in Maharashtra to 1.73x in Bihar), even
+    though the two are levied at equal rates. The likely cause is the order in which input-tax credit is set
+    off, which uses up credit against CGST first.
+15. **Strong seasonality.** April runs 27% above trend because March year-end filings are paid in April.
+    The weakest months are August (−8%), December (−6%) and September (−5%).
+16. **Small states are far more volatile.** The standard deviation of year-on-year growth is 65 pp in Mizoram
+    against 8.7 pp in Uttar Pradesh (Spearman ρ = −0.70 with state size).
+
+---
+
+## Recommendations
+
+**Policy**
+
+1. **Track concentration as an explicit indicator.** Revenue is drifting toward a few large consumer and
+   headquarters states. The Finance Commission and GST Council should monitor the HHI annually and check that
+   IGST settlement credits revenue to the consuming state rather than the billing state.
+2. **Support lagging producer states.** Himachal Pradesh, Uttarakhand, Jharkhand and Chhattisgarh need help
+   widening their own consumption base (services, tourism) rather than relying on output that is taxed
+   where it is consumed.
+3. **Plan the cess phase-out at the central level.** Cess was ₹1.42 lakh Cr (8.5%) in FY25 and is collected
+   most heavily in Jharkhand (21%), Chhattisgarh (20%) and Madhya Pradesh (18%). It goes to the compensation
+   fund, not state budgets, so the gap falls on the Centre. Any replacement levy on coal or demerit goods
+   will land on the same region.
+4. **Budget on normal growth.** Plan FY26 on about 10% nominal growth (buoyancy near 1), not the 15 to 27% of
+   FY22 to FY24. This project's forecast is ₹16.92 lakh Cr of core GST (+10.3%).
+
+**Treasury and tax administration**
+
+5. **Manage cash around the seasonal cycle.** Time borrowing and devolution transfers around the April surge
+   (+27%) and the August, December and September dips.
+6. **Give small states a volatility buffer.** For north-eastern and hill states, budget on multi-year averages
+   and hold reserves; single-month year-on-year swings average around ±50 pp.
+7. **Monitor anomalies automatically.** The scale-free Isolation Forest picked out the lockdown without
+   labels; run it monthly to catch reporting errors and state-level shocks early.
+
+**Data publishers**
+
+8. **Fix the source data.** Correct the Aug 2025 and Jan 2026 cess column, publish the 8 missing months of
+   2025-26, and release state population and total GSDP so revenue can be analysed per person.
+
+---
+
+
+## Project structure
 
 ```
-d:\codes\python\data_analytics/
-├── tax-collection-on-gst-portal.csv      # Raw Monthly GST Portal Records (95 Months)
-├── RS_Session_266_AU_1677_B_2.csv        # Raw Rajya Sabha / MoSPI GSDP Panel (FY20 to FY24)
-├── app.py                                # Streamlit Web Application (Light/Dark Theme, 6 Modules)
-├── requirements.txt                      # Production dependency specifications
-├── .streamlit/config.toml                # Streamlit server & theme configuration
+├── app.py                      Streamlit app (9 tabs, light/dark theme, working filters)
 ├── src/
-│   ├── data_engine.py                    # Entity resolution, fiscal calendar alignment, aggregation
-│   ├── synthetic_model.py                # Precasting (FY18-19), Imputation (FY24), Forecasting (FY25-26)
-│   ├── econometrics_engine.py            # Panel Fixed Effects, Tax Buoyancy, Lorenz/Gini Inequality
-│   ├── ml_engine.py                      # K-Means PCA Archetyping, Isolation Forest Anomalies
-│   ├── simulation_engine.py              # Monte Carlo Policy & Macro Simulator (1,000 paths, 95% VaR)
-│   └── visual_styles.py                  # Institutional Light & Dark CSS tokens and Plotly theme styler
-└── README.md
+│   ├── data_engine.py          loading, name harmonisation, data-quality rules, aggregation
+│   ├── econometrics_engine.py  panel models (clustered SE), correlations, buoyancy, Gini/Lorenz
+│   ├── forecasting.py          4 models, rolling-origin backtest, conformal intervals, OOS check
+│   ├── ml_engine.py            K-Means (silhouette-selected k), Isolation Forest anomalies
+│   ├── simulation_engine.py    Monte Carlo revenue scenarios
+│   ├── analysis.py             runs the pipeline and computes every headline number
+│   └── visual_styles.py        CSS themes and a colour-blind-safe chart palette
+├── tests/test_pipeline.py      13 tests covering data rules, findings and models
+├── tax-collection-on-gst-portal.csv
+└── RS_Session_266_AU_1677_B_2.csv
 ```
 
----
-
-## Methodological Framework & Mathematical Formulations
-
-To bridge the temporal mismatch between GST (2017–2026) and GSDP (2019–2024), the platform implements an econometric state-space synthesis engine.
-
-### 1. Historical Precasting / Backcasting (FY 2017-18 & FY 2018-19)
-We calibrate the empirical panel tax elasticity relationship on the overlapping empirical window (FY20 to FY24):
-
-```math
-\ln(\text{GST}_{i,t}) = \alpha_i + \beta \cdot \ln(\text{GSDP}_{i,t}) + \epsilon_{i,t}
-```
-
-Because actual GST collections are observed for FY 2017-18 and FY 2018-19, we invert the equation to estimate historical per capita output:
-
-```math
-\widehat{\ln(\text{GSDP}_{i,t})} = \frac{\ln(\text{GST}_{i,t}) - \alpha_i}{\beta}
-```
-
-Estimates are anchored to official RBI historical national nominal deflators (+11.0% in FY18, +10.5% in FY19) to ensure empirical consistency.
-
-### 2. In-Sample Imputation (FY 2023-24 Missing States)
-For the 6 states with unreleased official MoSPI data in FY 2023-24 (`Arunachal Pradesh`, `Goa`, `Gujarat`, `Manipur`, `Mizoram`, `Nagaland`), growth is estimated via a weighted composite model:
-
-```math
-g_{i, 2024} = 0.50 \cdot \text{CAGR}_{i, 2020 \to 2023} + 0.30 \cdot g^{\text{National}}_{2024} + 0.20 \cdot \left( \frac{\Delta \text{GST}_{i, 2024}}{\beta} \right)
-```
-
-Where:
-* $0.50$ captures state-specific multi-year growth momentum.
-* $0.30$ anchors to the national MoSPI nominal GDP benchmark (+10.6%).
-* $0.20$ reflects observed state GST collection growth scaled by tax elasticity.
-
-```math
-\widehat{\text{GSDP}}_{i, 2024} = \text{GSDP}_{i, 2023} \times (1 + g_{i, 2024})
-```
-
-### 3. Forward Forecasting (FY 2024-25 & FY 2025-26)
-* **GSDP Per Capita:** State-specific Holt's linear trend with Bayesian shrinkage toward the national medium-term nominal target (+10.0%), emitting $P_{10}$ (lower) and $P_{90}$ (upper) credible intervals:
-
-```math
-\hat{g}_{i, 2025} = 0.65 \cdot \text{Trend}_i + 0.35 \cdot g^{\text{National}}_{2025}
-```
-
-```math
-\hat{g}_{i, 2026} = 0.60 \cdot \text{Trend}_i + 0.40 \cdot g^{\text{National}}_{2026}
-```
-
-* **Monthly GST Collections:** Seasonal Holt-Winters (12-month multiplicative seasonality) closes out the series through March 2026, capturing the March fiscal year-end clearing peak and Diwali consumption surges.
-
-### 4. Panel Fixed Effects vs. Pooled OLS (Within-State Elasticity)
-
-```math
-\ln(\text{GST}_{i,t}) = \alpha_i + \beta_1 \cdot \ln(\text{GSDP}_{i,t}) + \beta_2 \cdot \text{PostCOVID}_t + \mathbf{u}_{i,t}
-```
-
----
-
-## Key Empirical Findings
-
-1. **Macro Revenue Aggregate:**
-   Across 95 reporting months, India generated **₹93,81,942.66 Crore** in total indirect taxes:
-   * **IGST (Integrated):** ₹32,33,883.07 Cr (**34.47%**)
-   * **SGST (State):** ₹28,65,428.56 Cr (**30.54%**)
-   * **CGST (Central):** ₹22,14,063.99 Cr (**23.60%**)
-   * **Compensation Cess:** ₹10,68,567.04 Cr (**11.39%**)
-
-2. **Extreme Spatial Concentration (The 5-State Pareto Divide):**
-   * **Maharashtra alone accounts for 20.40%** (₹19.14 Lakh Cr) of all GST collected in India.
-   * The **Top 5 states** (Maharashtra, Karnataka, Gujarat, Tamil Nadu, Uttar Pradesh) generate **52.69%** of national revenue.
-   * The **Top 10 states** generate **75.54%**, while the bottom 10 states and Union Territories combined contribute just **0.45%**.
-
-3. **COVID-19 Lockdown Shock & V-Shaped Recovery:**
-   * In April 2020, indirect tax receipts collapsed by **-75.09%** (from ₹78,701 Cr pre-COVID down to ₹19,606 Cr).
-   * Collections crossed back above pre-COVID baselines within **6 months** (October 2020), catalyzed by mandatory e-invoicing.
-
-4. **The Persistent 10.6x Inter-State Wealth Divide:**
-   * The ratio between the highest per capita state (Sikkim/Goa at ~₹5–7 Lakhs) and the lowest state (Bihar at ₹48,000–66,000) remained fixed at **10.5x to 10.6x** across all recorded years.
-
-5. **The Interstate Trade Discovery (IGST vs. Wealth):**
-   * Raw total GST has a weak cross-sectional correlation with Per Capita GSDP ($r = +0.137$) due to demographic size disparities.
-   * However, **IGST share exhibits a strong positive correlation ($r = +0.548$)** with Per Capita GSDP: higher-income states consume significantly more branded interstate goods and operate deeply integrated supply networks.
-
-6. **The Resource Extraction Cess Paradox:**
-   * Compensation Cess share is negatively correlated ($r = -0.374$) with Per Capita GSDP. Mineral-rich states (**Odisha: 24.2%**, **Jharkhand: 21.5%**, **Chhattisgarh: 18.9%**) generate high Cess shares from coal mining royalties despite having lower per capita incomes.
-
----
-
-## Econometric Conclusions
-
-* **Within-State Elasticity Outperforms Cross-Sectional OLS:**
-  * In Pooled OLS, elasticity appears muted ($R^2 = 3.8\%$) because state population scale confounds the relationship.
-  * In the **Entity Fixed Effects Model**, within-state tax elasticity is **$\beta = 2.03$ ($p < 0.0001, R^2 = 98.9\%$)**. This proves that as a state's economy expands, its tax revenue expands at a progressive $>2\times$ rate.
-* **Fiscal Revenue is Far More Concentrated than Income:**
-  * Gini coefficient of GSDP Per Capita: **$G = 0.36$** (moderate inequality).
-  * Gini coefficient of State GST Collections: **$G = 0.61$** (high concentration), reflecting corporate headquarters clustering and industrialized supply chains.
-
----
-
-## Strategic Policy Recommendations
-
-1. **Fiscal Buffer Mechanism for the Coal & Mineral Corridor:**
-   - As the GST Compensation Cess sunsets, mineral-producing states (Odisha, Jharkhand, Chhattisgarh) face significant fiscal revenue exposure. A dedicated transition fund or permanent mineral royalty restructuring is essential to protect developmental capital expenditures.
-2. **Targeted Digital Enforcement in High-Demographic, Lower-Buoyancy States:**
-   - States with massive consumer populations but sub-unitary tax buoyancy ($B < 1.0$) should receive targeted technical assistance for e-way bill verification and B2C digital receipt matching.
-3. **Formalization of Inter-State Destination Clearings (IGST Settlement Optimization):**
-   - Streamlining the IGST clearing mechanism will help consumer states accurately capture credit for final destination consumption, improving fiscal autonomy.
-4. **Institutional Buoyancy Benchmarking for the Finance Commission:**
-   - State Finance Commissions should adopt empirical Tax Buoyancy ($B_i$) as an explicit performance metric when determining horizontal tax devolution formulas, rewarding tax formalization efforts.
-
----
-
-## Running Locally
+## Running locally
 
 ```bash
-# Clone the repository
 git clone https://github.com/aditya-stv/GST-analytics.git
 cd GST-analytics
-
-# Run the Streamlit application
-streamlit run app.py
+pip install -r requirements-dev.txt
+pytest                 # 13 tests
+streamlit run app.py   # http://localhost:8501
 ```
 
-Then visit `http://localhost:8501`.
+## Limitations
+
+- No state population data, so GST and GSDP cannot be compared on the same per-person basis. Buoyancy
+  ratios therefore carry a small upward bias from population growth.
+- Only 5 years of official GSDP, so state-level elasticities are imprecise.
+- GST is booked where the taxpayer is registered, which is not always where goods are consumed.
+- The September 2025 rate rationalisation falls outside the training window. The −5% January 2026 miss is
+  consistent with it, but two months cannot confirm that.
